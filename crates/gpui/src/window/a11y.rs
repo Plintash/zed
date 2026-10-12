@@ -145,6 +145,14 @@ pub(crate) struct A11y {
     /// At the end of the frame, we re-call [`Self::sync_active_flag`] to
     /// determine whether we should actually send the finished [`TreeUpdate`].
     active_this_frame: bool,
+    /// Whether the window builds its accessibility tree every frame for
+    /// in-process automation, without assistive technology attached.
+    ///
+    /// Set through [`crate::Window::set_a11y_automation`]. A window with
+    /// automation enabled builds and retains the tree like any active window,
+    /// but never sends a tree update to the platform adapter, so no screen
+    /// reader or system service observes anything.
+    automation: bool,
     pub(crate) nodes: A11yNodeBuilder,
     pub(crate) focus_ids: FxHashMap<NodeId, FocusId>,
     pub(crate) node_bounds: FxHashMap<NodeId, Bounds<Pixels>>,
@@ -173,6 +181,7 @@ impl A11y {
             force_disabled,
             active_flag,
             active_this_frame: false,
+            automation: false,
             nodes: A11yNodeBuilder::new(),
             focus_ids: FxHashMap::default(),
             node_bounds: FxHashMap::default(),
@@ -213,8 +222,32 @@ impl A11y {
         self.active_this_frame = !self.force_disabled && self.active_flag.load(Ordering::SeqCst);
     }
 
+    /// Whether the frame builds (or built) an accessibility tree, either
+    /// because assistive technology asked for one or because automation keeps
+    /// one alive. This is the flag rendering code should gate optional a11y
+    /// label work on.
     pub(crate) fn is_active(&self) -> bool {
+        self.active_this_frame || self.automation
+    }
+
+    /// Whether the platform reported accessibility active for this frame.
+    /// Only a platform-active frame may send its tree update to the adapter.
+    pub(crate) fn os_active_this_frame(&self) -> bool {
         self.active_this_frame
+    }
+
+    pub(crate) fn set_automation(&mut self, enabled: bool) {
+        self.automation = enabled;
+    }
+
+    pub(crate) fn automation_enabled(&self) -> bool {
+        self.automation
+    }
+
+    /// The last frame's tree update with stable node ids, layout bounds, and
+    /// (in debug builds) element provenance.
+    pub(crate) fn automation_snapshot_json(&self) -> Option<String> {
+        self.debug.to_automation_json(&self.node_bounds)
     }
 
     pub(crate) fn set_focusable(&mut self, node_id: NodeId, focus_id: FocusId) {

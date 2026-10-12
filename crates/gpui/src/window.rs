@@ -3115,13 +3115,14 @@ impl Window {
         self.paint_inspector_hitbox(cx);
 
         // a11y may have been activated/deactivated halfway through the frame
-        let a11y_active_start_of_frame = self.a11y.is_active();
+        let a11y_build_start_of_frame = self.a11y.is_active();
+        let a11y_os_active_start_of_frame = self.a11y.os_active_this_frame();
         self.a11y.sync_active_flag();
-        let a11y_active_end_of_frame = self.a11y.is_active();
+        let a11y_os_active_end_of_frame = self.a11y.os_active_this_frame();
 
-        let should_send_a11y_update = a11y_active_start_of_frame && a11y_active_end_of_frame;
+        let should_send_a11y_update = a11y_os_active_start_of_frame && a11y_os_active_end_of_frame;
 
-        if a11y_active_start_of_frame {
+        if a11y_build_start_of_frame {
             // Harvest frame metadata for the debug dump while the live window
             // and frame are still in scope.
             let frame_info = crate::window::a11y::debug::FrameDebugInfo {
@@ -6014,6 +6015,59 @@ impl Window {
     /// Debug representation of the last frame's accessibility information.
     pub fn debug_a11y_tree_json(&self) -> Option<String> {
         self.a11y.debug_tree_json()
+    }
+
+    /// Keep the accessibility tree built every frame without an assistive
+    /// technology client attached, for in-process automation tooling.
+    ///
+    /// While automation is enabled the window builds and retains its
+    /// accessibility tree exactly as it would for a screen reader, but never
+    /// sends a tree update to the platform adapter, so nothing observes the
+    /// UI through the system. Use [`Self::a11y_automation_snapshot`] to read
+    /// the tree and [`Self::dispatch_a11y_action`] to act on it.
+    pub fn set_a11y_automation(&mut self, enabled: bool) {
+        self.a11y.set_automation(enabled);
+        self.refresh();
+    }
+
+    /// Whether automation keeps this window's accessibility tree built
+    /// without an assistive technology client.
+    pub fn is_a11y_automation_enabled(&self) -> bool {
+        self.a11y.automation_enabled()
+    }
+
+    /// The last frame's accessibility tree as JSON, using the stable AccessKit
+    /// node ids [`Self::dispatch_a11y_action`] takes.
+    ///
+    /// Unlike [`Self::debug_a11y_tree_json`], ids are the real per-frame
+    /// `NodeId`s rather than short ephemeral keys, each node carries the
+    /// layout bounds the frame recorded for it, the focused node is named, and
+    /// debug builds include element provenance. Requires the tree to have been
+    /// built, which automation or an assistive technology client enables.
+    pub fn a11y_automation_snapshot(&self) -> Option<String> {
+        self.a11y.automation_snapshot_json()
+    }
+
+    /// Dispatch an accessibility action to the node a screen reader would
+    /// target, taking the same route as a real request: a listener registered
+    /// with [`Self::on_a11y_action`] runs first, and common actions fall back
+    /// to the built-in handling (a click at the node's bounds, focus, blur).
+    pub fn dispatch_a11y_action(
+        &mut self,
+        node_id: accesskit::NodeId,
+        action: accesskit::Action,
+        data: Option<accesskit::ActionData>,
+        cx: &mut App,
+    ) {
+        self.handle_a11y_action(
+            accesskit::ActionRequest {
+                action,
+                target_tree: accesskit::TreeId::ROOT,
+                target_node: node_id,
+                data,
+            },
+            cx,
+        );
     }
 
     /// Register a listener for an accessibility action on a specific node.

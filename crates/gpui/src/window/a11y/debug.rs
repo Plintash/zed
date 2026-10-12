@@ -161,6 +161,147 @@ impl A11yDebug {
         });
         Some(serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string()))
     }
+
+    /// Serialize the last tree update for automation, keeping the real
+    /// [`NodeId`]s so a caller can dispatch actions back to the same nodes.
+    ///
+    /// Unlike [`Self::to_json`], node ids are the stable AccessKit ids of the
+    /// frame rather than short ephemeral keys, and every node carries the
+    /// layout bounds the frame recorded for it plus its focus state. In debug
+    /// builds each node also carries its element provenance.
+    pub(crate) fn to_automation_json(
+        &self,
+        node_bounds: &FxHashMap<NodeId, crate::Bounds<crate::Pixels>>,
+    ) -> Option<String> {
+        let update = self.last_tree_update.as_ref()?;
+
+        let mut nodes = Vec::with_capacity(update.nodes.len());
+        for (id, node) in &update.nodes {
+            let mut entry = serde_json::Map::new();
+            entry.insert("node".into(), serde_json::json!(id.0.to_string()));
+
+            #[cfg(debug_assertions)]
+            if let Some(info) = self.last_node_info.get(id) {
+                if let Some(element_id) = info.element_id.as_deref() {
+                    entry.insert("element_id".into(), serde_json::json!(element_id));
+                }
+                if let Some(view) = info.view {
+                    entry.insert("view".into(), serde_json::json!(view));
+                }
+                if let Some(source_location) = &info.source_location {
+                    entry.insert(
+                        "source_location".into(),
+                        serde_json::json!(source_location.to_string()),
+                    );
+                }
+            }
+
+            entry.insert(
+                "role".into(),
+                serde_json::json!(format!("{:?}", node.role())),
+            );
+            if let Some(label) = node.label() {
+                entry.insert("label".into(), serde_json::json!(label));
+            }
+            if let Some(description) = node.description() {
+                entry.insert("description".into(), serde_json::json!(description));
+            }
+            if let Some(value) = node.value() {
+                entry.insert("value".into(), serde_json::json!(value));
+            }
+            if let Some(placeholder) = node.placeholder() {
+                entry.insert("placeholder".into(), serde_json::json!(placeholder));
+            }
+            if let Some(tooltip) = node.tooltip() {
+                entry.insert("tooltip".into(), serde_json::json!(tooltip));
+            }
+            if let Some(shortcut) = node.keyboard_shortcut() {
+                entry.insert("keyboard_shortcut".into(), serde_json::json!(shortcut));
+            }
+            // Boolean states. `selected`/`expanded`/`toggled` are tri-state:
+            // absent means "not applicable", so only a set value is reported.
+            if node.is_disabled() {
+                entry.insert("disabled".into(), serde_json::json!(true));
+            }
+            if node.is_hidden() {
+                entry.insert("hidden".into(), serde_json::json!(true));
+            }
+            if let Some(selected) = node.is_selected() {
+                entry.insert("selected".into(), serde_json::json!(selected));
+            }
+            if let Some(expanded) = node.is_expanded() {
+                entry.insert("expanded".into(), serde_json::json!(expanded));
+            }
+            if let Some(toggled) = node.toggled() {
+                entry.insert("toggled".into(), serde_json::json!(format!("{toggled:?}")));
+            }
+
+            let children: Vec<String> = node
+                .children()
+                .iter()
+                .map(|child| child.0.to_string())
+                .collect();
+            if !children.is_empty() {
+                entry.insert("children".into(), serde_json::json!(children));
+            }
+
+            // AccessKit keeps supported actions in a private bitset with no
+            // getter, so probe each variant. `Action::n` maps a discriminant
+            // to its variant and cannot drift out of sync with the enum.
+            let mut actions = Vec::new();
+            let mut next_action = 0u8;
+            while let Some(action) = Action::n(next_action) {
+                next_action += 1;
+                if node.supports_action(action) {
+                    actions.push(format!("{action:?}"));
+                }
+            }
+            if !actions.is_empty() {
+                entry.insert("actions".into(), serde_json::json!(actions));
+            }
+
+            if let Some(bounds) = node_bounds.get(id) {
+                entry.insert(
+                    "bounds".into(),
+                    serde_json::json!({
+                        "x": bounds.origin.x.0,
+                        "y": bounds.origin.y.0,
+                        "width": bounds.size.width.0,
+                        "height": bounds.size.height.0,
+                    }),
+                );
+            }
+
+            nodes.push(serde_json::Value::Object(entry));
+        }
+
+        let frame = self.last_frame.as_ref().map(|frame| {
+            serde_json::json!({
+                "number": frame.frame_number,
+                "rendered_at": frame.rendered_at,
+                "window_title": frame.window_title.as_ref().map(|title| title.to_string()),
+                "viewport_size": {
+                    "width": frame.viewport_size.width.0,
+                    "height": frame.viewport_size.height.0,
+                },
+                "scale_factor": frame.scale_factor,
+            })
+        });
+
+        let focus = self
+            .last_gpui_focus
+            .filter(|id| update.nodes.iter().any(|(node_id, _)| node_id == id))
+            .map(|id| id.0.to_string());
+
+        let value = serde_json::json!({
+            "frame": frame,
+            "focus": focus,
+            "active_descendant": self.last_active_descendant.map(|id| id.0.to_string()),
+            "root": update.tree.as_ref().map(|tree| tree.root.0.to_string()),
+            "nodes": nodes,
+        });
+        Some(serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string()))
+    }
 }
 
 #[derive(Default)]

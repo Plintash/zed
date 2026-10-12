@@ -391,7 +391,10 @@ impl<E: Element> Drawable<E> {
                                     crate::window::a11y::debug::NodeDebugInfo {
                                         synthetic: false,
                                         view,
-                                        element_id: global_id.0.last().map(|id| format!("{id:?}")),
+                                        // `Display` renders `Name` ids as the name
+                                        // itself, which is the stable handle
+                                        // automation tooling matches on.
+                                        element_id: global_id.0.last().map(|id| id.to_string()),
                                         source_location,
                                     },
                                 );
